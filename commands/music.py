@@ -1,4 +1,3 @@
-# music.py
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -19,7 +18,6 @@ class AnimatedMusicControls(View):
         self.guild_id = guild_id
         self.is_playing = False
         
-        # Custom button styles with emojis
         self.play_button = Button(label="Play", style=discord.ButtonStyle.green, emoji="▶️")
         self.play_button.callback = self.play_button_callback
 
@@ -41,7 +39,6 @@ class AnimatedMusicControls(View):
         self.loop_button = Button(label="Loop", style=discord.ButtonStyle.green, emoji="🔁")
         self.loop_button.callback = self.loop_button_callback
 
-        # Set rows for responsive layout
         self.play_button.row = 0
         self.pause_button.row = 0
         self.skip_button.row = 0
@@ -50,7 +47,6 @@ class AnimatedMusicControls(View):
         self.volume_up_button.row = 1
         self.loop_button.row = 1
 
-        # Add items after setting rows
         self.add_item(self.play_button)
         self.add_item(self.pause_button)
         self.add_item(self.skip_button)
@@ -62,7 +58,6 @@ class AnimatedMusicControls(View):
     async def update_button_states(self, interaction: discord.Interaction):
         voice_client = self.cog.voice_clients.get(self.guild_id)
         self.is_playing = voice_client and voice_client.is_playing()
-        
         self.play_button.disabled = self.is_playing
         self.pause_button.disabled = not self.is_playing
         await interaction.response.edit_message(view=self)
@@ -147,7 +142,7 @@ class MusicCog(commands.Cog):
             'default_search': 'ytsearch',
             'max_downloads': 1,
             'outtmpl': '%(id)s.%(ext)s',
-            'socket_timeout': 10,  # Added to handle network issues
+            'socket_timeout': 15,
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -168,8 +163,8 @@ class MusicCog(commands.Cog):
             raise Exception(f"Failed to process query: {str(e)}")
 
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -b:a 128k -ar 48000 -ac 2 -loglevel error'  # Simplified options, error log level
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 10000000',
+            'options': '-vn -b:a 64k -ar 44100 -ac 2 -loglevel verbose'  # Lower bitrate, verbose logging
         }
         try:
             source = discord.PCMVolumeTransformer(
@@ -280,6 +275,8 @@ class MusicCog(commands.Cog):
                     logger.error(f"Playback error in guild {guild_id}: {str(error)}")
                     if retry_count < max_retries:
                         logger.info(f"Retrying playback for {self.currents[guild_id]['title']} in guild {guild_id} (Attempt {retry_count + 1})")
+                        # Re-insert current song to retry
+                        self.queues[guild_id].insert(0, self.currents[guild_id])
                         asyncio.run_coroutine_threadsafe(
                             self.play_next(guild_id, text_channel, retry_count + 1), self.bot.loop
                         ).result()
@@ -307,11 +304,15 @@ class MusicCog(commands.Cog):
             logger.error(f"Error in play_next for guild {guild_id}: {str(e)}")
             if retry_count < max_retries:
                 logger.info(f"Retrying play_next for guild {guild_id} (Attempt {retry_count + 1})")
+                # Re-insert current song to retry
+                if self.currents.get(guild_id):
+                    self.queues[guild_id].insert(0, self.currents[guild_id])
                 await self.play_next(guild_id, text_channel, retry_count + 1)
             else:
                 logger.error(f"Max retries reached in play_next for guild {guild_id}")
-                self.currents.pop(guild_id, None)
                 await text_channel.send(f"Error playing next song after {max_retries} attempts: {str(e)}")
+                # Clear only current, keep queue intact
+                self.currents.pop(guild_id, None)
                 if self.queues.get(guild_id):
                     await self.play_next(guild_id, text_channel)
 
