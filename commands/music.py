@@ -139,7 +139,7 @@ class MusicCog(commands.Cog):
 
     async def get_audio_source(self, query):
         ydl_opts = {
-            'format': 'bestaudio/best',  # Simplified to avoid codec conflicts
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -147,34 +147,29 @@ class MusicCog(commands.Cog):
             'default_search': 'ytsearch',
             'max_downloads': 1,
             'outtmpl': '%(id)s.%(ext)s',
+            'socket_timeout': 10,  # Added to handle network issues
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
                 if 'entries' in info and info['entries']:
                     entry = info['entries'][0]
-                    audio_url = entry.get('url')
-                    title = entry.get('title', 'Unknown Title')
-                    thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
-                    duration = entry.get('duration')
-                    if not audio_url:
-                        raise Exception("No valid audio URL found in search results")
                 else:
-                    audio_url = info.get('url')
-                    title = info.get('title', 'Unknown Title')
-                    thumbnail = info['thumbnails'][0]['url'] if 'thumbnails' in info and info['thumbnails'] else None
-                    duration = info.get('duration')
-                    if not audio_url:
-                        raise Exception("Could not extract audio URL")
+                    entry = info
+                audio_url = entry.get('url')
+                title = entry.get('title', 'Unknown Title')
+                thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
+                duration = entry.get('duration')
+                if not audio_url:
+                    raise Exception("No valid audio URL found")
                 logger.info(f"Extracted audio URL: {audio_url} for title: {title}")
         except Exception as e:
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
 
-        # Simplified FFmpeg options to avoid duplicates
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -b:a 128k -ar 48000 -ac 2 -loglevel warning'  # Lower bitrate, warning log level
+            'options': '-vn -b:a 128k -ar 48000 -ac 2 -loglevel error'  # Simplified options, error log level
         }
         try:
             source = discord.PCMVolumeTransformer(
@@ -214,7 +209,7 @@ class MusicCog(commands.Cog):
         if guild_id in self.animation_tasks:
             del self.animation_tasks[guild_id]
 
-    async def play_next(self, guild_id, text_channel):
+    async def play_next(self, guild_id, text_channel, retry_count=0, max_retries=3):
         try:
             loop_mode = self.loop_modes.get(guild_id, 0)
             current = self.currents.get(guild_id)
@@ -224,68 +219,7 @@ class MusicCog(commands.Cog):
             elif loop_mode == 2 and current:
                 self.queues[guild_id].append(current)
 
-            if self.queues.get(guild_id):
-                self.currents[guild_id] = self.queues[guild_id].pop(0)
-                voice_client = self.voice_clients.get(guild_id)
-                if voice_client:
-                    volume = self.volumes.get(guild_id, 1.0)
-                    self.currents[guild_id]['source'].volume = volume
-                    logger.info(f"Playing: {self.currents[guild_id]['title']} with volume {volume}")
-
-                    # Create embed with modern design
-                    embed = discord.Embed(
-                        title="Now Playing",
-                        description=f"🎵 {self.currents[guild_id]['title']}\n**Queue Position:** 1",
-                        color=discord.Color.from_rgb(
-                            random.randint(0, 255),
-                            random.randint(0, 255),
-                            random.randint(0, 255)
-                        )
-                    )
-                    if 'thumbnail' in self.currents[guild_id] and self.currents[guild_id]['thumbnail']:
-                        embed.set_thumbnail(url=self.currents[guild_id]['thumbnail'])
-                    if 'duration' in self.currents[guild_id] and self.currents[guild_id]['duration']:
-                        dur = self.currents[guild_id]['duration']
-                        mins, secs = divmod(int(dur), 60)
-                        embed.add_field(name="Duration", value=f"{mins}:{secs:02d}", inline=True)
-                    embed.set_footer(text="Use the buttons below to control playback")
-                    
-                    view = AnimatedMusicControls(self, guild_id)
-                    if guild_id in self.play_messages:
-                        try:
-                            await self.play_messages[guild_id].delete()
-                        except:
-                            pass
-                    self.play_messages[guild_id] = await text_channel.send(embed=embed, view=view)
-
-                    # Start animation task
-                    if guild_id in self.animation_tasks and not self.animation_tasks[guild_id].done():
-                        self.animation_tasks[guild_id].cancel()
-                    self.animation_tasks[guild_id] = asyncio.create_task(self.animate_embed(guild_id, text_channel, self.play_messages[guild_id]))
-
-                    def after_play(error):
-                        if error:
-                            logger.error(f"Playback error in guild {guild_id}: {str(error)}")
-                            asyncio.run_coroutine_threadsafe(
-                                text_channel.send(f"Playback error: {str(error)}"), self.bot.loop
-                            ).result()
-                        # Ensure FFmpeg process is cleaned up
-                        try:
-                            if voice_client.source:
-                                voice_client.source.cleanup()
-                                logger.info(f"Cleaned up FFmpeg process for guild {guild_id}")
-                        except Exception as e:
-                            logger.error(f"Error cleaning up FFmpeg process in guild {guild_id}: {str(e)}")
-                        asyncio.run_coroutine_threadsafe(
-                            self.play_next(guild_id, text_channel), self.bot.loop
-                        ).result()
-
-                    voice_client.play(self.currents[guild_id]['source'], after=after_play)
-                else:
-                    logger.error(f"No voice client found for guild {guild_id}")
-                    await text_channel.send("Error: No voice client available.")
-                    self.currents.pop(guild_id, None)
-            else:
+            if not self.queues.get(guild_id):
                 self.currents.pop(guild_id, None)
                 embed = discord.Embed(
                     title="Queue Ended",
@@ -298,13 +232,88 @@ class MusicCog(commands.Cog):
                     except:
                         pass
                 await text_channel.send(embed=embed)
+                return
+
+            self.currents[guild_id] = self.queues[guild_id].pop(0)
+            voice_client = self.voice_clients.get(guild_id)
+            if not voice_client or not voice_client.is_connected():
+                logger.error(f"No voice client for guild {guild_id}")
+                await text_channel.send("Error: Bot is not connected to a voice channel.")
+                self.currents.pop(guild_id, None)
+                return
+
+            volume = self.volumes.get(guild_id, 1.0)
+            self.currents[guild_id]['source'].volume = volume
+            logger.info(f"Playing: {self.currents[guild_id]['title']} with volume {volume}")
+
+            embed = discord.Embed(
+                title="Now Playing",
+                description=f"🎵 {self.currents[guild_id]['title']}\n**Queue Position:** 1",
+                color=discord.Color.from_rgb(
+                    random.randint(0, 255),
+                    random.randint(0, 255),
+                    random.randint(0, 255)
+                )
+            )
+            if 'thumbnail' in self.currents[guild_id] and self.currents[guild_id]['thumbnail']:
+                embed.set_thumbnail(url=self.currents[guild_id]['thumbnail'])
+            if 'duration' in self.currents[guild_id] and self.currents[guild_id]['duration']:
+                dur = self.currents[guild_id]['duration']
+                mins, secs = divmod(int(dur), 60)
+                embed.add_field(name="Duration", value=f"{mins}:{secs:02d}", inline=True)
+            embed.set_footer(text="Use the buttons below to control playback")
+            
+            view = AnimatedMusicControls(self, guild_id)
+            if guild_id in self.play_messages:
+                try:
+                    await self.play_messages[guild_id].delete()
+                except:
+                    pass
+            self.play_messages[guild_id] = await text_channel.send(embed=embed, view=view)
+
+            if guild_id in self.animation_tasks and not self.animation_tasks[guild_id].done():
+                self.animation_tasks[guild_id].cancel()
+            self.animation_tasks[guild_id] = asyncio.create_task(self.animate_embed(guild_id, text_channel, self.play_messages[guild_id]))
+
+            def after_play(error):
+                if error:
+                    logger.error(f"Playback error in guild {guild_id}: {str(error)}")
+                    if retry_count < max_retries:
+                        logger.info(f"Retrying playback for {self.currents[guild_id]['title']} in guild {guild_id} (Attempt {retry_count + 1})")
+                        asyncio.run_coroutine_threadsafe(
+                            self.play_next(guild_id, text_channel, retry_count + 1), self.bot.loop
+                        ).result()
+                    else:
+                        logger.error(f"Max retries reached for {self.currents[guild_id]['title']} in guild {guild_id}")
+                        asyncio.run_coroutine_threadsafe(
+                            text_channel.send(f"Failed to play {self.currents[guild_id]['title']} after {max_retries} attempts."), self.bot.loop
+                        ).result()
+                        asyncio.run_coroutine_threadsafe(
+                            self.play_next(guild_id, text_channel), self.bot.loop
+                        ).result()
+                else:
+                    try:
+                        if voice_client.source:
+                            voice_client.source.cleanup()
+                            logger.info(f"Cleaned up FFmpeg process for guild {guild_id}")
+                    except Exception as e:
+                        logger.error(f"Error cleaning up FFmpeg process in guild {guild_id}: {str(e)}")
+                    asyncio.run_coroutine_threadsafe(
+                        self.play_next(guild_id, text_channel), self.bot.loop
+                    ).result()
+
+            voice_client.play(self.currents[guild_id]['source'], after=after_play)
         except Exception as e:
             logger.error(f"Error in play_next for guild {guild_id}: {str(e)}")
-            self.currents.pop(guild_id, None)
-            await text_channel.send(f"Error playing next song: {str(e)}")
-            if self.queues.get(guild_id):
-                logger.info(f"Attempting to play next song in queue for guild {guild_id}")
-                await self.play_next(guild_id, text_channel)
+            if retry_count < max_retries:
+                logger.info(f"Retrying play_next for guild {guild_id} (Attempt {retry_count + 1})")
+                await self.play_next(guild_id, text_channel, retry_count + 1)
+            else:
+                logger.error(f"Max retries reached in play_next for guild {guild_id}")
+                self.currents.pop(guild_id, None)
+                await text_channel.send(f"Error playing next song after {max_retries} attempts: {str(e)}")
+                if self.queues.get(guild_id):
+                    await self.play_next(guild_id, text_channel)
 
     @commands.command()
     async def join(self, ctx):
