@@ -1,3 +1,4 @@
+# music.py
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -138,7 +139,7 @@ class MusicCog(commands.Cog):
 
     async def get_audio_source(self, query):
         ydl_opts = {
-            'format': 'bestaudio[acodec=opus]/bestaudio',  # Prefer opus for better compatibility
+            'format': 'bestaudio/best',  # Simplified to avoid codec conflicts
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -170,10 +171,10 @@ class MusicCog(commands.Cog):
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
 
-        # Simplified FFmpeg options to avoid conflicts
+        # Simplified FFmpeg options to avoid duplicates
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -b:a 192k -ar 48000 -ac 2'  # Reduced bitrate for stability
+            'options': '-vn -b:a 128k -ar 48000 -ac 2 -loglevel warning'  # Lower bitrate, warning log level
         }
         try:
             source = discord.PCMVolumeTransformer(
@@ -184,6 +185,7 @@ class MusicCog(commands.Cog):
                 ),
                 volume=1.0
             )
+            logger.info(f"FFmpeg command: ffmpeg {ffmpeg_options['before_options']} {audio_url} {ffmpeg_options['options']}")
             return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration}
         except Exception as e:
             logger.error(f"Failed to create FFmpegPCMAudio for URL {audio_url}: {str(e)}")
@@ -271,6 +273,7 @@ class MusicCog(commands.Cog):
                         try:
                             if voice_client.source:
                                 voice_client.source.cleanup()
+                                logger.info(f"Cleaned up FFmpeg process for guild {guild_id}")
                         except Exception as e:
                             logger.error(f"Error cleaning up FFmpeg process in guild {guild_id}: {str(e)}")
                         asyncio.run_coroutine_threadsafe(
@@ -345,7 +348,8 @@ class MusicCog(commands.Cog):
         
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             if self.voice_clients[guild_id].source:
-                self.voice_clients[guild_id].source.cleanup()  # Ensure FFmpeg cleanup
+                self.voice_clients[guild_id].source.cleanup()
+                logger.info(f"Cleaned up FFmpeg process for guild {guild_id} on leave")
             await self.voice_clients[guild_id].disconnect()
             self.voice_clients.pop(guild_id, None)
             self.queues.pop(guild_id, None)
@@ -436,7 +440,8 @@ class MusicCog(commands.Cog):
             
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             if self.voice_clients[guild_id].source:
-                self.voice_clients[guild_id].source.cleanup()  # Ensure FFmpeg cleanup
+                self.voice_clients[guild_id].source.cleanup()
+                logger.info(f"Cleaned up FFmpeg process for guild {guild_id} on stop")
             self.voice_clients[guild_id].stop()
             self.queues[guild_id] = []
             self.currents.pop(guild_id, None)
@@ -447,7 +452,8 @@ class MusicCog(commands.Cog):
         guild_id = ctx.guild.id
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             if self.voice_clients[guild_id].source:
-                self.voice_clients[guild_id].source.cleanup()  # Ensure FFmpeg cleanup
+                self.voice_clients[guild_id].source.cleanup()
+                logger.info(f"Cleaned up FFmpeg process for guild {guild_id} on skip")
             self.voice_clients[guild_id].stop()
             await ctx.send("Dilewati.")
             logger.info(f"Skipped song in guild {guild_id}")
@@ -532,7 +538,8 @@ class MusicCog(commands.Cog):
                             self.animation_tasks[guild_id].cancel()
                             self.animation_tasks.pop(guild_id, None)
                         if vc.source:
-                            vc.source.cleanup()  # Ensure FFmpeg cleanup
+                            vc.source.cleanup()
+                            logger.info(f"Cleaned up FFmpeg process for guild {guild_id} on voice state update")
                         await vc.disconnect()
                         self.voice_clients.pop(guild_id, None)
                         self.queues.pop(guild_id, None)
