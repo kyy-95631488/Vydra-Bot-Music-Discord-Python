@@ -5,7 +5,6 @@ import yt_dlp
 import asyncio
 import logging
 from discord.ui import Button, View
-import discord.ui
 import random
 
 # Setup logging
@@ -139,7 +138,7 @@ class MusicCog(commands.Cog):
 
     async def get_audio_source(self, query):
         ydl_opts = {
-            'format': 'bestaudio[acodec=mp3]/bestaudio[acodec=opus]/bestaudio',
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -172,8 +171,8 @@ class MusicCog(commands.Cog):
             raise Exception(f"Failed to process query: {str(e)}")
 
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 10000000',
-            'options': '-vn -b:a 256k -bufsize 512k -maxrate 320k -ar 48000 -ac 2'
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn -ac 2 -ar 48000 -b:a 192k'
         }
         try:
             source = discord.PCMVolumeTransformer(
@@ -230,7 +229,6 @@ class MusicCog(commands.Cog):
                     self.currents[guild_id]['source'].volume = volume
                     logger.info(f"Playing: {self.currents[guild_id]['title']} with volume {volume}")
 
-                    # Create embed with modern design
                     embed = discord.Embed(
                         title="Now Playing",
                         description=f"🎵 {self.currents[guild_id]['title']}\n**Queue Position:** 1",
@@ -256,7 +254,6 @@ class MusicCog(commands.Cog):
                             pass
                     self.play_messages[guild_id] = await text_channel.send(embed=embed, view=view)
 
-                    # Start animation task
                     if guild_id in self.animation_tasks and not self.animation_tasks[guild_id].done():
                         self.animation_tasks[guild_id].cancel()
                     self.animation_tasks[guild_id] = asyncio.create_task(self.animate_embed(guild_id, text_channel, self.play_messages[guild_id]))
@@ -266,11 +263,17 @@ class MusicCog(commands.Cog):
                             logger.error(f"Playback error in guild {guild_id}: {str(error)}")
                             asyncio.run_coroutine_threadsafe(
                                 text_channel.send(f"Playback error: {str(error)}"), self.bot.loop
-                            ).result()
+                            )
                         asyncio.run_coroutine_threadsafe(
                             self.play_next(guild_id, text_channel), self.bot.loop
-                        ).result()
-                    voice_client.play(self.currents[guild_id]['source'], after=after_play)
+                        )
+                    try:
+                        voice_client.play(self.currents[guild_id]['source'], after=after_play)
+                    except Exception as e:
+                        logger.error(f"Failed to start playback in guild {guild_id}: {str(e)}")
+                        await text_channel.send(f"Failed to play track: {str(e)}")
+                        self.currents.pop(guild_id, None)
+                        await self.play_next(guild_id, text_channel)
                 else:
                     logger.error(f"No voice client found for guild {guild_id}")
                     await text_channel.send("Error: No voice client available.")
