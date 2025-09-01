@@ -173,9 +173,10 @@ class MusicCog(commands.Cog):
             raise Exception(f"Failed to process query: {str(e)}")
 
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 10000000',
-            'options': '-vn -b:a 256k -bufsize 512k -maxrate 320k -ar 48000 -ac 2 -filter:a volume=1.0'
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn -ac 2 -ar 48000 -b:a 32k'
         }
+
         try:
             source = discord.PCMVolumeTransformer(
                 discord.FFmpegPCMAudio(
