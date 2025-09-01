@@ -340,8 +340,9 @@ class MusicCog(commands.Cog):
             self.animation_tasks[guild_id].cancel()
             self.animation_tasks.pop(guild_id, None)
         
-        if bestaan guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
+        if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             await self.voice_clients[guild_id].disconnect()
+
             self.voice_clients.pop(guild_id, None)
             self.queues.pop(guild_id, None)
             self.currents.pop(guild_id, None)
