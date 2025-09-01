@@ -12,7 +12,7 @@ import subprocess
 import signal
 import time
 
-# Setup logging
+# Setup logging with reduced verbosity for Railway
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -155,6 +155,10 @@ class MusicCog(commands.Cog):
                     'default_search': 'ytsearch',
                     'max_downloads': 1,
                     'outtmpl': '%(id)s.%(ext)s',
+                    'socket_timeout': 10,  # Added timeout to prevent hanging
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
                 }
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(query, download=False)
@@ -176,17 +180,18 @@ class MusicCog(commands.Cog):
                     logger.info(f"Extracted audio URL: {audio_url} for title: {title}")
 
                 ffmpeg_options = {
-                    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_on_network_error 1',
-                    'options': '-vn -bufsize 32k -maxrate 128k'  # Reduced buffer and bitrate for lower resource usage
+                    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_on_network_error 1 -timeout 10000000',
+                    'options': '-vn -bufsize 32k -maxrate 128k -b:a 96k'  # Optimized for lower resource usage
                 }
                 process = subprocess.Popen(
-                    ['ffmpeg', '-i', audio_url, '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'],
+                    ['ffmpeg', '-i', audio_url, '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:'],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    preexec_fn=os.setsid  # Use process group for proper cleanup
+                    preexec_fn=os.setsid,
+                    bufsize=4096  # Smaller buffer size for memory efficiency
                 )
                 # Check if process started successfully
-                time.sleep(0.5)  # Short wait to check if process dies immediately
+                time.sleep(0.5)
                 if process.poll() is not None:
                     err = process.stderr.read().decode()
                     raise Exception(f"FFmpeg process failed to start: {err}")
@@ -203,9 +208,10 @@ class MusicCog(commands.Cog):
             except Exception as e:
                 logger.error(f"Attempt {attempt+1}/{retries} failed for query '{query}': {str(e)}")
                 if attempt < retries - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    await asyncio.sleep(2 ** attempt)
                 else:
                     raise Exception(f"Failed to create audio source after {retries} attempts: {str(e)}")
+        raise Exception("Failed to create audio source: Max retries exceeded")
 
     def cleanup_ffmpeg(self, guild_id):
         """Clean up FFmpeg process for a guild with improved handling"""
@@ -214,7 +220,7 @@ class MusicCog(commands.Cog):
             try:
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
                 process.terminate()
-                process.wait(timeout=10)  # Increased timeout
+                process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 logger.warning(f"Terminate timed out for guild {guild_id}, killing process")
                 os.killpg(os.getpgid(process.pid), signal.SIGKILL)
@@ -241,7 +247,7 @@ class MusicCog(commands.Cog):
                 embed.color = colors[i % len(colors)]
                 await message.edit(embed=embed)
                 i += 1
-                await asyncio.sleep(2)  # Increased interval to reduce CPU usage
+                await asyncio.sleep(3)  # Increased interval to reduce CPU usage
             except Exception as e:
                 logger.error(f"Animation error in guild {guild_id}: {e}")
                 break
@@ -328,7 +334,7 @@ class MusicCog(commands.Cog):
             logger.error(f"Error in play_next for guild {guild_id}: {str(e)}")
             self.currents.pop(guild_id, None)
             self.cleanup_ffmpeg(guild_id)
-            await text_channel.send(f"Error playing next song: {str(e)}")
+            await text_channel.send(f"Error playing next song: {str(e)}. Skipping to next track.")
             if self.queues.get(guild_id):
                 logger.info(f"Attempting to play next song in queue for guild {guild_id}")
                 await self.play_next(guild_id, text_channel)
@@ -341,14 +347,14 @@ class MusicCog(commands.Cog):
             return
 
         channel = ctx.author.voice.channel
-        max_attempts = 5  # Increased attempts for reliability
+        max_attempts = 5
         for attempt in range(max_attempts):
             try:
                 if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
                     if self.voice_clients[guild_id].channel != channel:
                         await self.voice_clients[guild_id].move_to(channel)
                 else:
-                    self.voice_clients[guild_id] = await channel.connect()
+                    self.voice_clients[guild_id] = await channel.connect(timeout=30.0, reconnect=True)
                 self.queues.setdefault(guild_id, [])
                 self.loop_modes.setdefault(guild_id, 0)
                 self.volumes.setdefault(guild_id, 1.0)
@@ -358,7 +364,7 @@ class MusicCog(commands.Cog):
             except discord.errors.ClientException as e:
                 logger.error(f"ClientException joining voice channel (attempt {attempt + 1}/{max_attempts}): {str(e)}")
                 if attempt < max_attempts - 1:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    await asyncio.sleep(2 ** attempt)
                 continue
             except Exception as e:
                 logger.error(f"Error joining voice channel: {str(e)}")
@@ -422,7 +428,7 @@ class MusicCog(commands.Cog):
             if not self.voice_clients[guild_id].is_playing() and not self.voice_clients[guild_id].is_paused():
                 await self.play_next(guild_id, ctx.channel)
         except Exception as e:
-            await ctx.send(f"Error: {str(e)}")
+            await ctx.send(f"Error: Tidak dapat memutar '{query}'. Coba lagu lain atau periksa URL. ({str(e)})")
             logger.error(f"Error in play command for query '{query}': {str(e)}")
 
     @commands.command()
