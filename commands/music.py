@@ -1,4 +1,5 @@
 # music.py
+# music.py
 import os
 import discord
 from discord.ext import commands
@@ -9,6 +10,7 @@ from discord.ui import Button, View
 import random
 import subprocess
 import signal
+import time
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
@@ -132,8 +134,8 @@ class AnimatedMusicControls(View):
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.queues = {}  # guild_id: list of {'title': str, 'source': PCMVolumeTransformer, 'thumbnail': str, 'duration': int}
-        self.currents = {}  # guild_id: {'title': str, 'source': PCMVolumeTransformer, 'thumbnail': str, 'duration': int}
+        self.queues = {}  # guild_id: list of {'title': str, 'source': PCMVolumeTransformer, 'thumbnail': str, 'duration': int, 'process': Popen}
+        self.currents = {}  # guild_id: {'title': str, 'source': PCMVolumeTransformer, 'thumbnail': str, 'duration': int, 'process': Popen}
         self.voice_clients = {}  # guild_id: VoiceClient
         self.loop_modes = {}  # guild_id: 0(off), 1(single), 2(queue)
         self.volumes = {}  # guild_id: float (0.0 - 2.0)
@@ -141,73 +143,82 @@ class MusicCog(commands.Cog):
         self.animation_tasks = {}  # guild_id: Task for animation
         self.ffmpeg_processes = {}  # guild_id: subprocess.Popen for FFmpeg
 
-    async def get_audio_source(self, query):
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            'source_address': '0.0.0.0',
-            'default_search': 'ytsearch',
-            'max_downloads': 1,
-            'outtmpl': '%(id)s.%(ext)s',
-        }
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(query, download=False)
-                if 'entries' in info and info['entries']:
-                    entry = info['entries'][0]
-                    audio_url = entry.get('url')
-                    title = entry.get('title', 'Unknown Title')
-                    thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
-                    duration = entry.get('duration')
-                    if not audio_url:
-                        raise Exception("No valid audio URL found in search results")
-                else:
-                    audio_url = info.get('url')
-                    title = info.get('title', 'Unknown Title')
-                    thumbnail = info['thumbnails'][0]['url'] if 'thumbnails' in info and info['thumbnails'] else None
-                    duration = info.get('duration')
-                    if not audio_url:
-                        raise Exception("Could not extract audio URL")
-                logger.info(f"Extracted audio URL: {audio_url} for title: {title}")
-        except Exception as e:
-            logger.error(f"Failed to process query '{query}': {str(e)}")
-            raise Exception(f"Failed to process query: {str(e)}")
+    async def get_audio_source(self, query, retries=3):
+        for attempt in range(retries):
+            try:
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'quiet': True,
+                    'no_warnings': True,
+                    'noplaylist': True,
+                    'source_address': '0.0.0.0',
+                    'default_search': 'ytsearch',
+                    'max_downloads': 1,
+                    'outtmpl': '%(id)s.%(ext)s',
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(query, download=False)
+                    if 'entries' in info and info['entries']:
+                        entry = info['entries'][0]
+                        audio_url = entry.get('url')
+                        title = entry.get('title', 'Unknown Title')
+                        thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
+                        duration = entry.get('duration')
+                        if not audio_url:
+                            raise Exception("No valid audio URL found in search results")
+                    else:
+                        audio_url = info.get('url')
+                        title = info.get('title', 'Unknown Title')
+                        thumbnail = info['thumbnails'][0]['url'] if 'thumbnails' in info and info['thumbnails'] else None
+                        duration = info.get('duration')
+                        if not audio_url:
+                            raise Exception("Could not extract audio URL")
+                    logger.info(f"Extracted audio URL: {audio_url} for title: {title}")
 
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -bufsize 64k'  # Reduced buffer size for lower memory usage
-        }
-        try:
-            # Create FFmpeg process with explicit process tracking
-            process = subprocess.Popen(
-                ['ffmpeg', '-i', audio_url, '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                preexec_fn=os.setsid  # Use process group for proper cleanup
-            )
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(
-                    process.stdout,
-                    pipe=True,
-                    executable="ffmpeg",
-                    **ffmpeg_options
-                ),
-                volume=1.0
-            )
-            return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration, 'process': process}
-        except Exception as e:
-            logger.error(f"Failed to create FFmpegPCMAudio for URL {audio_url}: {str(e)}")
-            raise Exception(f"Failed to create audio source: {str(e)}")
+                ffmpeg_options = {
+                    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -reconnect_on_network_error 1',
+                    'options': '-vn -bufsize 32k -maxrate 128k'  # Reduced buffer and bitrate for lower resource usage
+                }
+                process = subprocess.Popen(
+                    ['ffmpeg', '-i', audio_url, '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    preexec_fn=os.setsid  # Use process group for proper cleanup
+                )
+                # Check if process started successfully
+                time.sleep(0.5)  # Short wait to check if process dies immediately
+                if process.poll() is not None:
+                    err = process.stderr.read().decode()
+                    raise Exception(f"FFmpeg process failed to start: {err}")
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(
+                        process.stdout,
+                        pipe=True,
+                        executable="ffmpeg",
+                        **ffmpeg_options
+                    ),
+                    volume=1.0
+                )
+                return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration, 'process': process}
+            except Exception as e:
+                logger.error(f"Attempt {attempt+1}/{retries} failed for query '{query}': {str(e)}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    raise Exception(f"Failed to create audio source after {retries} attempts: {str(e)}")
 
     def cleanup_ffmpeg(self, guild_id):
-        """Clean up FFmpeg process for a guild"""
+        """Clean up FFmpeg process for a guild with improved handling"""
         if guild_id in self.ffmpeg_processes:
             process = self.ffmpeg_processes[guild_id]
             try:
                 os.killpg(os.getpgid(process.pid), signal.SIGTERM)
                 process.terminate()
+                process.wait(timeout=10)  # Increased timeout
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Terminate timed out for guild {guild_id}, killing process")
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                process.kill()
                 process.wait(timeout=5)
             except Exception as e:
                 logger.error(f"Error cleaning up FFmpeg process for guild {guild_id}: {e}")
@@ -230,7 +241,7 @@ class MusicCog(commands.Cog):
                 embed.color = colors[i % len(colors)]
                 await message.edit(embed=embed)
                 i += 1
-                await asyncio.sleep(1)  # Increased interval to reduce CPU usage
+                await asyncio.sleep(2)  # Increased interval to reduce CPU usage
             except Exception as e:
                 logger.error(f"Animation error in guild {guild_id}: {e}")
                 break
@@ -330,7 +341,7 @@ class MusicCog(commands.Cog):
             return
 
         channel = ctx.author.voice.channel
-        max_attempts = 3
+        max_attempts = 5  # Increased attempts for reliability
         for attempt in range(max_attempts):
             try:
                 if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
@@ -347,7 +358,7 @@ class MusicCog(commands.Cog):
             except discord.errors.ClientException as e:
                 logger.error(f"ClientException joining voice channel (attempt {attempt + 1}/{max_attempts}): {str(e)}")
                 if attempt < max_attempts - 1:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
                 continue
             except Exception as e:
                 logger.error(f"Error joining voice channel: {str(e)}")
