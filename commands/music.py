@@ -138,61 +138,57 @@ class MusicCog(commands.Cog):
 
     async def get_audio_source(self, query):
         ydl_opts = {
-            'format': 'bestaudio[ext=webm]/bestaudio/bestaudio[acodec=opus]',
+            'format': 'bestaudio[ext=webm][acodec=opus]/bestaudio/best',  # lebih ringan dari mp3
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'source_address': '0.0.0.0',
             'default_search': 'ytsearch',
             'max_downloads': 1,
-            'socket_timeout': 15,
+            'outtmpl': '%(id)s.%(ext)s',
+            'cachedir': False,             # jangan cache (hemat storage ephemeral Railway)
+            'nocheckcertificate': True,    # hindari SSL error
         }
-
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
                 if 'entries' in info and info['entries']:
                     entry = info['entries'][0]
+                    audio_url = entry.get('url')
+                    title = entry.get('title', 'Unknown Title')
+                    thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
+                    duration = entry.get('duration')
+                    if not audio_url:
+                        raise Exception("No valid audio URL found in search results")
                 else:
-                    entry = info
-
-                audio_url = entry.get('url')
-                title = entry.get('title', 'Unknown Title')
-                thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
-                duration = entry.get('duration')
-
-                if not audio_url:
-                    raise Exception("No valid audio URL found")
-
+                    audio_url = info.get('url')
+                    title = info.get('title', 'Unknown Title')
+                    thumbnail = info['thumbnails'][0]['url'] if 'thumbnails' in info and info['thumbnails'] else None
+                    duration = info.get('duration')
+                    if not audio_url:
+                        raise Exception("Could not extract audio URL")
                 logger.info(f"Extracted audio URL: {audio_url} for title: {title}")
         except Exception as e:
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
 
-        # 3 level fallback bitrate
-        bitrates = ["128k", "64k", "32k"]
-
-        for br in bitrates:
-            ffmpeg_options = {
-                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-                'options': f'-vn -b:a {br} -bufsize 128k -ar 48000 -ac 2'
-            }
-            try:
-                source = discord.PCMVolumeTransformer(
-                    discord.FFmpegPCMAudio(
-                        audio_url,
-                        executable="ffmpeg",
-                        **ffmpeg_options
-                    ),
-                    volume=1.0
-                )
-                logger.info(f"✅ Playing {title} at {br}")
-                return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration}
-            except Exception as e:
-                logger.warning(f"⚠️ Failed with bitrate {br}, trying lower... Error: {str(e)}")
-
-        # kalau semua gagal
-        raise Exception("❌ Failed to create audio source with all fallback bitrates")
+        ffmpeg_options = {
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 10000000',
+            'options': '-vn -b:a 256k -bufsize 512k -maxrate 320k -ar 48000 -ac 2 -filter:a volume=1.0'
+        }
+        try:
+            source = discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio(
+                    audio_url,
+                    executable="ffmpeg",
+                    **ffmpeg_options
+                ),
+                volume=1.0
+            )
+            return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration}
+        except Exception as e:
+            logger.error(f"Failed to create FFmpegPCMAudio for URL {audio_url}: {str(e)}")
+            raise Exception(f"Failed to create audio source: {str(e)}")
 
     async def animate_embed(self, guild_id, channel, message):
         colors = [
