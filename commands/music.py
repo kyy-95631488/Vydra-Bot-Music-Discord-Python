@@ -147,6 +147,7 @@ class MusicCog(commands.Cog):
             'max_downloads': 1,
             'socket_timeout': 15,
         }
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
@@ -168,24 +169,30 @@ class MusicCog(commands.Cog):
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
 
-        ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -b:a 128k -bufsize 256k -ar 48000 -ac 2'
-        }
-        try:
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(
-                    audio_url,
-                    executable="ffmpeg",
-                    **ffmpeg_options
-                ),
-                volume=1.0
-            )
-            return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration}
-        except Exception as e:
-            logger.error(f"Failed to create FFmpegPCMAudio for URL {audio_url}: {str(e)}")
-            raise Exception(f"Failed to create audio source: {str(e)}")
+        # 3 level fallback bitrate
+        bitrates = ["128k", "64k", "32k"]
 
+        for br in bitrates:
+            ffmpeg_options = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                'options': f'-vn -b:a {br} -bufsize 128k -ar 48000 -ac 2'
+            }
+            try:
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio(
+                        audio_url,
+                        executable="ffmpeg",
+                        **ffmpeg_options
+                    ),
+                    volume=1.0
+                )
+                logger.info(f"✅ Playing {title} at {br}")
+                return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration}
+            except Exception as e:
+                logger.warning(f"⚠️ Failed with bitrate {br}, trying lower... Error: {str(e)}")
+
+        # kalau semua gagal
+        raise Exception("❌ Failed to create audio source with all fallback bitrates")
 
     async def animate_embed(self, guild_id, channel, message):
         colors = [
