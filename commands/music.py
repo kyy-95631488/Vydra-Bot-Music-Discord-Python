@@ -1,4 +1,3 @@
-# music.py
 import discord
 from discord.ext import commands
 import yt_dlp
@@ -138,48 +137,44 @@ class MusicCog(commands.Cog):
 
     async def get_audio_source(self, query):
         ydl_opts = {
-            'format': 'bestaudio[ext=webm][acodec=opus]/bestaudio/best',  # lebih ringan dari mp3
+            'format': 'bestaudio[acodec=opus]/bestaudio[acodec=webm]/bestaudio[ext=m4a]/bestaudio',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'source_address': '0.0.0.0',
             'default_search': 'ytsearch',
-            'max_downloads': 1,
-            'outtmpl': '%(id)s.%(ext)s',
-            'cachedir': False,             # jangan cache (hemat storage ephemeral Railway)
-            'nocheckcertificate': True,    # hindari SSL error
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
                 if 'entries' in info and info['entries']:
                     entry = info['entries'][0]
-                    audio_url = entry.get('url')
-                    title = entry.get('title', 'Unknown Title')
-                    thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
-                    duration = entry.get('duration')
-                    if not audio_url:
-                        raise Exception("No valid audio URL found in search results")
                 else:
-                    audio_url = info.get('url')
-                    title = info.get('title', 'Unknown Title')
-                    thumbnail = info['thumbnails'][0]['url'] if 'thumbnails' in info and info['thumbnails'] else None
-                    duration = info.get('duration')
+                    entry = info
+                audio_url = None
+                for fmt in entry.get('formats', []):
+                    if fmt.get('acodec') in ['opus', 'webm', 'm4a'] and fmt.get('vcodec') == 'none':
+                        audio_url = fmt.get('url')
+                        break
+                if not audio_url:
+                    audio_url = entry.get('url')
                     if not audio_url:
-                        raise Exception("Could not extract audio URL")
-                logger.info(f"Extracted audio URL: {audio_url} for title: {title}")
+                        raise Exception("No valid audio stream found")
+                title = entry.get('title', 'Unknown Title')
+                thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
+                duration = entry.get('duration')
+                logger.info(f"Extracted stream URL: {audio_url} for title: {title}")
         except Exception as e:
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
 
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -ac 2 -ar 48000 -b:a 32k'
+            'options': '-vn -ar 48000 -ac 2'
         }
-
         try:
             source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio(
+                discord.FFmpegOpusAudio(
                     audio_url,
                     executable="ffmpeg",
                     **ffmpeg_options
@@ -188,7 +183,7 @@ class MusicCog(commands.Cog):
             )
             return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration}
         except Exception as e:
-            logger.error(f"Failed to create FFmpegPCMAudio for URL {audio_url}: {str(e)}")
+            logger.error(f"Failed to create FFmpegOpusAudio for URL {audio_url}: {str(e)}")
             raise Exception(f"Failed to create audio source: {str(e)}")
 
     async def animate_embed(self, guild_id, channel, message):
@@ -232,7 +227,6 @@ class MusicCog(commands.Cog):
                     self.currents[guild_id]['source'].volume = volume
                     logger.info(f"Playing: {self.currents[guild_id]['title']} with volume {volume}")
 
-                    # Create embed with modern design
                     embed = discord.Embed(
                         title="Now Playing",
                         description=f"🎵 {self.currents[guild_id]['title']}\n**Queue Position:** 1",
@@ -258,7 +252,6 @@ class MusicCog(commands.Cog):
                             pass
                     self.play_messages[guild_id] = await text_channel.send(embed=embed, view=view)
 
-                    # Start animation task
                     if guild_id in self.animation_tasks and not self.animation_tasks[guild_id].done():
                         self.animation_tasks[guild_id].cancel()
                     self.animation_tasks[guild_id] = asyncio.create_task(self.animate_embed(guild_id, text_channel, self.play_messages[guild_id]))
