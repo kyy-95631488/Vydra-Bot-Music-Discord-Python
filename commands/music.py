@@ -138,41 +138,39 @@ class MusicCog(commands.Cog):
 
     async def get_audio_source(self, query):
         ydl_opts = {
-            'format': 'bestaudio[acodec=mp3]/bestaudio[acodec=opus]/bestaudio',
+            'format': 'bestaudio[ext=webm]/bestaudio/bestaudio[acodec=opus]',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
             'source_address': '0.0.0.0',
             'default_search': 'ytsearch',
             'max_downloads': 1,
-            'outtmpl': '%(id)s.%(ext)s',
+            'socket_timeout': 15,
         }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
                 if 'entries' in info and info['entries']:
                     entry = info['entries'][0]
-                    audio_url = entry.get('url')
-                    title = entry.get('title', 'Unknown Title')
-                    thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
-                    duration = entry.get('duration')
-                    if not audio_url:
-                        raise Exception("No valid audio URL found in search results")
                 else:
-                    audio_url = info.get('url')
-                    title = info.get('title', 'Unknown Title')
-                    thumbnail = info['thumbnails'][0]['url'] if 'thumbnails' in info and info['thumbnails'] else None
-                    duration = info.get('duration')
-                    if not audio_url:
-                        raise Exception("Could not extract audio URL")
+                    entry = info
+
+                audio_url = entry.get('url')
+                title = entry.get('title', 'Unknown Title')
+                thumbnail = entry['thumbnails'][0]['url'] if 'thumbnails' in entry and entry['thumbnails'] else None
+                duration = entry.get('duration')
+
+                if not audio_url:
+                    raise Exception("No valid audio URL found")
+
                 logger.info(f"Extracted audio URL: {audio_url} for title: {title}")
         except Exception as e:
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
 
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 10000000',
-            'options': '-vn -b:a 256k -bufsize 512k -maxrate 320k -ar 48000 -ac 2 -filter:a volume=1.0'
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn -b:a 128k -bufsize 256k -ar 48000 -ac 2'
         }
         try:
             source = discord.PCMVolumeTransformer(
@@ -187,6 +185,7 @@ class MusicCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to create FFmpegPCMAudio for URL {audio_url}: {str(e)}")
             raise Exception(f"Failed to create audio source: {str(e)}")
+
 
     async def animate_embed(self, guild_id, channel, message):
         colors = [
