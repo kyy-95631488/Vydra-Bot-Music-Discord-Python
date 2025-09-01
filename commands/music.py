@@ -99,21 +99,13 @@ class AnimatedMusicControls(View):
 
     async def volume_up_button_callback(self, interaction: discord.Interaction):
         self.cog.volumes[self.guild_id] = min(2.0, self.cog.volumes.get(self.guild_id, 1.0) + 0.1)
-        voice_client = self.cog.voice_clients.get(self.guild_id)
-        if voice_client and voice_client.source:
-            voice_client.source.volume = self.cog.volumes[self.guild_id]
-            await interaction.response.send_message(f"Volume: {self.cog.volumes[self.guild_id] * 100:.0f}%", ephemeral=True)
-        else:
-            await interaction.response.send_message("No audio playing", ephemeral=True)
+        await self.cog.update_volume(self.guild_id)
+        await interaction.response.send_message(f"Volume: {self.cog.volumes[self.guild_id] * 100:.0f}%", ephemeral=True)
 
     async def volume_down_button_callback(self, interaction: discord.Interaction):
         self.cog.volumes[self.guild_id] = max(0.0, self.cog.volumes.get(self.guild_id, 1.0) - 0.1)
-        voice_client = self.cog.voice_clients.get(self.guild_id)
-        if voice_client and voice_client.source:
-            voice_client.source.volume = self.cog.volumes[self.guild_id]
-            await interaction.response.send_message(f"Volume: {self.cog.volumes[self.guild_id] * 100:.0f}%", ephemeral=True)
-        else:
-            await interaction.response.send_message("No audio playing", ephemeral=True)
+        await self.cog.update_volume(self.guild_id)
+        await interaction.response.send_message(f"Volume: {self.cog.volumes[self.guild_id] * 100:.0f}%", ephemeral=True)
 
     async def loop_button_callback(self, interaction: discord.Interaction):
         current_mode = self.cog.loop_modes.get(self.guild_id, 0)
@@ -127,8 +119,8 @@ class AnimatedMusicControls(View):
 class MusicCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.queues = {}  # guild_id: list of {'title': str, 'source': PCMVolumeTransformer, 'thumbnail': str, 'duration': int}
-        self.currents = {}  # guild_id: {'title': str, 'source': PCMVolumeTransformer, 'thumbnail': str, 'duration': int}
+        self.queues = {}  # guild_id: list of {'title': str, 'source': FFmpegOpusAudio, 'thumbnail': str, 'duration': int, 'url': str}
+        self.currents = {}  # guild_id: {'title': str, 'source': FFmpegOpusAudio, 'thumbnail': str, 'duration': int, 'url': str}
         self.voice_clients = {}  # guild_id: VoiceClient
         self.loop_modes = {}  # guild_id: 0(off), 1(single), 2(queue)
         self.volumes = {}  # guild_id: float (0.0 - 2.0)
@@ -168,23 +160,42 @@ class MusicCog(commands.Cog):
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
 
+        volume = self.volumes.get(self.guild_id, 1.0) if hasattr(self, 'guild_id') else 1.0
         ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-            'options': '-vn -ar 48000 -ac 2'
+            'options': f'-vn -ar 48000 -ac 2 -filter:a volume={volume}'
         }
         try:
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegOpusAudio(
-                    audio_url,
-                    executable="ffmpeg",
-                    **ffmpeg_options
-                ),
-                volume=1.0
+            source = discord.FFmpegOpusAudio(
+                audio_url,
+                executable="ffmpeg",
+                **ffmpeg_options
             )
-            return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration}
+            return {'title': title, 'source': source, 'thumbnail': thumbnail, 'duration': duration, 'url': audio_url}
         except Exception as e:
             logger.error(f"Failed to create FFmpegOpusAudio for URL {audio_url}: {str(e)}")
             raise Exception(f"Failed to create audio source: {str(e)}")
+
+    async def update_volume(self, guild_id):
+        voice_client = self.voice_clients.get(guild_id)
+        current = self.currents.get(guild_id)
+        if voice_client and current and voice_client.is_playing():
+            volume = self.volumes.get(guild_id, 1.0)
+            ffmpeg_options = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                'options': f'-vn -ar 48000 -ac 2 -filter:a volume={volume}'
+            }
+            new_source = discord.FFmpegOpusAudio(
+                current['url'],
+                executable="ffmpeg",
+                **ffmpeg_options
+            )
+            voice_client.stop()
+            current['source'] = new_source
+            voice_client.play(new_source, after=lambda e: asyncio.run_coroutine_threadsafe(
+                self.play_next(guild_id, self.play_messages[guild_id].channel), self.bot.loop
+            ).result())
+            logger.info(f"Updated volume to {volume*100:.0f}% in guild {guild_id}")
 
     async def animate_embed(self, guild_id, channel, message):
         colors = [
@@ -223,9 +234,7 @@ class MusicCog(commands.Cog):
                 self.currents[guild_id] = self.queues[guild_id].pop(0)
                 voice_client = self.voice_clients.get(guild_id)
                 if voice_client:
-                    volume = self.volumes.get(guild_id, 1.0)
-                    self.currents[guild_id]['source'].volume = volume
-                    logger.info(f"Playing: {self.currents[guild_id]['title']} with volume {volume}")
+                    logger.info(f"Playing: {self.currents[guild_id]['title']} with volume {self.volumes.get(guild_id, 1.0)*100:.0f}%")
 
                     embed = discord.Embed(
                         title="Now Playing",
@@ -331,7 +340,7 @@ class MusicCog(commands.Cog):
             self.animation_tasks[guild_id].cancel()
             self.animation_tasks.pop(guild_id, None)
         
-        if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
+        if bestaan guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             await self.voice_clients[guild_id].disconnect()
             self.voice_clients.pop(guild_id, None)
             self.queues.pop(guild_id, None)
@@ -346,6 +355,7 @@ class MusicCog(commands.Cog):
     @commands.command()
     async def play(self, ctx, *, query):
         guild_id = ctx.guild.id
+        self.guild_id = guild_id  # Temporary store guild_id for get_audio_source
 
         if guild_id not in self.voice_clients or not self.voice_clients[guild_id].is_connected():
             if not ctx.author.voice or not ctx.author.voice.channel:
@@ -389,7 +399,7 @@ class MusicCog(commands.Cog):
     async def resume(self, ctx):
         guild_id = ctx.guild.id
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_paused():
-            self.voice_clients[guild_id].resume()
+            self.voice_client[guild_id].resume()
             await ctx.send("Dilanjutkan.")
             logger.info(f"Resumed playback in guild {guild_id}")
         else:
@@ -441,8 +451,7 @@ class MusicCog(commands.Cog):
         guild_id = ctx.guild.id
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             self.volumes[guild_id] = max(0.0, min(2.0, vol / 100))
-            if self.voice_clients[guild_id].source:
-                self.voice_clients[guild_id].source.volume = self.volumes[guild_id]
+            await self.update_volume(guild_id)
             await ctx.send(f"Volume diatur ke {vol}%")
             logger.info(f"Set volume to {vol}% in guild {guild_id}")
         else:
