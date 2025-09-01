@@ -138,7 +138,7 @@ class MusicCog(commands.Cog):
 
     async def get_audio_source(self, query):
         ydl_opts = {
-            'format': 'bestaudio[acodec=mp3]/bestaudio[acodec=opus]/bestaudio',
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
@@ -171,8 +171,8 @@ class MusicCog(commands.Cog):
             raise Exception(f"Failed to process query: {str(e)}")
 
         ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 10000000',
-            'options': '-vn -b:a 256k -bufsize 512k -maxrate 320k -ar 48000 -ac 2 -filter:a volume=1.0'
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn'
         }
         try:
             source = discord.PCMVolumeTransformer(
@@ -263,12 +263,8 @@ class MusicCog(commands.Cog):
                     def after_play(error):
                         if error:
                             logger.error(f"Playback error in guild {guild_id}: {str(error)}")
-                            asyncio.run_coroutine_threadsafe(
-                                text_channel.send(f"Playback error: {str(error)}"), self.bot.loop
-                            ).result()
-                        asyncio.run_coroutine_threadsafe(
-                            self.play_next(guild_id, text_channel), self.bot.loop
-                        ).result()
+                            self.bot.loop.call_soon_threadsafe(asyncio.create_task, text_channel.send(f"Playback error: {str(error)}"))
+                        self.bot.loop.call_soon_threadsafe(asyncio.create_task, self.play_next(guild_id, text_channel))
                     voice_client.play(self.currents[guild_id]['source'], after=after_play)
                 else:
                     logger.error(f"No voice client found for guild {guild_id}")
