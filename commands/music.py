@@ -6,6 +6,9 @@ import asyncio
 import logging
 from discord.ui import Button, View
 import random
+import os
+import tempfile
+import base64
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -128,16 +131,31 @@ class MusicCog(commands.Cog):
         self.play_messages = {}  # guild_id: Message
         self.animation_tasks = {}  # guild_id: Task for animation
 
+    async def write_cookies_file(self):
+        cookies_base64 = os.getenv('YTDLP_COOKIES')
+        if not cookies_base64:
+            raise Exception('YTDLP_COOKIES environment variable is missing')
+        cookies_content = base64.b64decode(cookies_base64).decode('utf-8')
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
+            temp_file.write(cookies_content)
+            cookies_path = temp_file.name
+        return cookies_path
+
     async def get_audio_source(self, query):
-        ydl_opts = {
-            'format': 'bestaudio[acodec=opus]/bestaudio[acodec=webm]/bestaudio[ext=m4a]/bestaudio',
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True,
-            'source_address': '0.0.0.0',
-            'default_search': 'ytsearch',
-        }
+        cookies_path = None
         try:
+            cookies_path = await self.write_cookies_file()
+            ydl_opts = {
+                'format': 'bestaudio[acodec=opus]/bestaudio[acodec=webm]/bestaudio[ext=m4a]/bestaudio',
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True,
+                'source_address': '0.0.0.0',
+                'default_search': 'ytsearch',
+                'cookies': cookies_path,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+                'referer': 'https://www.youtube.com/',
+            }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
                 if 'entries' in info and info['entries']:
@@ -160,6 +178,12 @@ class MusicCog(commands.Cog):
         except Exception as e:
             logger.error(f"Failed to process query '{query}': {str(e)}")
             raise Exception(f"Failed to process query: {str(e)}")
+        finally:
+            if cookies_path and os.path.exists(cookies_path):
+                try:
+                    os.unlink(cookies_path)
+                except Exception as e:
+                    logger.error(f"Failed to delete cookies file: {str(e)}")
 
         volume = self.volumes.get(self.guild_id, 1.0) if hasattr(self, 'guild_id') else 1.0
         ffmpeg_options = {
@@ -343,7 +367,6 @@ class MusicCog(commands.Cog):
         
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_connected():
             await self.voice_clients[guild_id].disconnect()
-
             self.voice_clients.pop(guild_id, None)
             self.queues.pop(guild_id, None)
             self.currents.pop(guild_id, None)
@@ -401,7 +424,7 @@ class MusicCog(commands.Cog):
     async def resume(self, ctx):
         guild_id = ctx.guild.id
         if guild_id in self.voice_clients and self.voice_clients[guild_id].is_paused():
-            self.voice_client[guild_id].resume()
+            self.voice_clients[guild_id].resume()
             await ctx.send("Dilanjutkan.")
             logger.info(f"Resumed playback in guild {guild_id}")
         else:
