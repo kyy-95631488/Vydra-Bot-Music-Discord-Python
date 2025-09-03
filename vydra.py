@@ -1,3 +1,4 @@
+# vydra.py
 import os
 import discord
 from discord import app_commands
@@ -31,12 +32,6 @@ async def check_token(token: str) -> bool:
             headers={"Authorization": f"Bot {token}"}
         ) as response:
             return response.status == 200
-
-async def check_community_server() -> bool:
-    """Prompt user to confirm if they have created a Discord server with Community enabled."""
-    print("You created a new Discord Server and enabled Community in Server Settings?")
-    response = input("Enter 'yes' or 'no': ").strip().lower()
-    return response == "yes"
 
 def setup_badge_command(bot: commands.Bot):
     """Set up badge-related slash commands."""
@@ -124,11 +119,6 @@ async def main():
     print("Remember to do not share your Discord Bot token with anyone!\n")
     print("This tool will help you to get the Discord Active Developer Badge")
     print("If you have any problem, please contact me on Discord: majonez.exe\n")
-
-    # Check if community server is set up
-    if not await check_community_server():
-        print("✖ You need to create a new Discord Server and enable Community in Server Settings!")
-        return
 
     # Check if token is valid
     if not await check_token(TOKEN):
